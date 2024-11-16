@@ -1,19 +1,14 @@
-#ifndef SECRETS_H
-#define SECRETS_H
-/*
+#ifndef NETWORKSETUP_H
+#define NETWORKSETUP_H
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
 
-          WIFI SETUP
-
-*/
 // #define WIFI_SSID     "GalaxyM34"
 // #define WIFI_PASSWORD "dangkhoa"
 // #define WIFI_SSID     "Khuvuonthanhpho"
 // #define WIFI_PASSWORD "kvttp0104"
-#define WIFI_SSID     "PTIT.HCM_SV"
+#define WIFI_SSID     " PTIT.HCM_SV"
 #define WIFI_PASSWORD ""
-
-WiFiClientSecure espClient;
-PubSubClient client(espClient);
 
 // MQTT server info(default uncomment, comment for test)
 // const char* mqttServer = "rabbitmq-001-pub.sa.wise-paas.com";;
@@ -27,9 +22,13 @@ const int mqttPort = 8883;
 const char* mqttUser = "ndk_mqtt_demo";
 const char* mqttPassword = "20112002Kh";
 
+WiFiClientSecure espClient;
+PubSubClient client(espClient);
+
 // MQTT topic
 const char* mqttTopic = "breathing/data";
-void Wifi_setup(void)
+
+void wifiSetup(void)
 {
   WiFi.disconnect();
   delay(1000);
@@ -52,7 +51,7 @@ void Wifi_setup(void)
   Serial.println();
 }
 
-void MQTT_setup(void)
+void mqttSetup(void)
 {
   // Set up MQTT connection
   client.setServer(mqttServer, mqttPort);
@@ -67,4 +66,3 @@ void MQTT_setup(void)
   }
 }
 #endif
-

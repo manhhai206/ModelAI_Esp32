@@ -1,117 +1,49 @@
 //ML and DSP library
-#include <TensorFlowLite_ESP32.h>
-#include "tensorflow/lite/micro/all_ops_resolver.h"
-#include "tensorflow/lite/micro/micro_error_reporter.h"
-#include "tensorflow/lite/micro/micro_interpreter.h"
-#include "tensorflow/lite/micro/system_setup.h"
-#include "tensorflow/lite/schema/schema_generated.h"
-#include "AImodel.h"
+#include "TensorFlowLiteSetup.h"
 #include "FFT.h"
 
 // Sensor library
-#include <MPU6050.h>
-#include <Wire.h>
+#include "SensorSetup.h"
 
 // Network and JSON 
-#include <WiFiClientSecure.h>
-#include <PubSubClient.h>
+#include "NetworkSetup.h"
 #include <ArduinoJson.h>
+
+// Time stamp
 #include <time.h>
-#include "secrets.h"
 
-// Data collection params
-const int num_timesteps = 60;
-const int num_features = 6;
-const int time_delay = 25;
-
-// Init
-MPU6050 mpu;
+// Battery
+#include "BatterySetup.h"
 
 // Timestamp define
 // Config NTP server
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 7 * 3600;  // GMT+7
-const int   daylightOffset_sec = 0;
-// unsigned int count = 0;
+const char* ntp_server = "pool.ntp.org";
+const long  gmt_offset_sec = 7 * 3600;  // GMT+7
+const int   daylight_offset_sec = 0;
 
-// ADC variable
-int offset = 10;
-int numberOfSamples = 1000;
-int sum = 0;
-int voltage = 0;
-const int chargePin = 4;
-const int fullPin = 5;
-
-// global variables used for TensorFlow Lite (Micro)
-tflite::MicroErrorReporter tflErrorReporter;
-tflite::AllOpsResolver tflOpsResolver;
-
-const tflite::Model* tflModel = nullptr;
-tflite::MicroInterpreter* tflInterpreter = nullptr;
-TfLiteTensor* tflInputTensor = nullptr;
-TfLiteTensor* tflOutputTensor = nullptr;
-
-// Create a static memory buffer for TFLM, the size may need to
-// be adjusted based on the model you are using
-constexpr int tensorArenaSize = 8 * 1024;
-byte tensorArena[tensorArenaSize] __attribute__((aligned(16)));
-
-// array to map gesture index to a name
-const char* GESTURES[] = {
-  "Breathing",
-  "Apnea"
-};
-String gestures = "";
-
-// Number of label
-#define NUM_GESTURES (sizeof(GESTURES) / sizeof(GESTURES[0]))
-
-// array to save IMU data
-float input_data[num_timesteps * num_features] = {};
-
-int predicted_gesture = -1; // prediction index
-volatile bool data_ready = false;
+// State 
 bool gotData = false;
 bool record = false;
+String gestures = "";
 
 void setup() 
 {
   Serial.begin(115200);
   
   // MPU6050 setup
-  Wire.begin();
-  mpu.initialize();
-  if (!mpu.testConnection()) 
-  {
-    Serial.println("MPU6050 connection failed!");
-    while (1);
-  }
+  sensorSetup();
+
   //Setup wifi
-  Wifi_setup();
+  wifiSetup();
 
   // Setup NTP
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  configTime(gmt_offset_sec, daylight_offset_sec, ntp_server);
 
   // Setup MQTT
-  MQTT_setup();
+  mqttSetup();
 
-  // get the TFL representation of the model byte array
-  tflModel = tflite::GetModel(AImodel);
-  if (tflModel->version() != TFLITE_SCHEMA_VERSION) 
-  {
-    Serial.println("Model schema mismatch!");
-    while (1);
-  }
-
-  // Create an interpreter to run the model
-  tflInterpreter = new tflite::MicroInterpreter(tflModel, tflOpsResolver, tensorArena, tensorArenaSize, &tflErrorReporter);
-
-  // Allocate memory for the model's input and output tensors
-  tflInterpreter->AllocateTensors();
-
-  // Get pointers for the model's input and output tensors
-  tflInputTensor = tflInterpreter->input(0);
-  tflOutputTensor = tflInterpreter->output(0);
+  // Setup AI model
+  tensorFlowLiteSetup();
 
   // Create FreeRTOS tasks
   xTaskCreate(taskReadSensor, "TaskReadSensor", 4096, NULL, 1, NULL);
@@ -125,10 +57,6 @@ void taskReadSensor(void *parameter)
   // Serial.println(xPortGetCoreID());
   while (1) 
   {
-    // if (!fb.getBool("Record")) {
-    //   vTaskDelay(1000 / portTICK_PERIOD_MS);
-    //   continue;
-    // }
     //Data collection
     for (int i = 0; i < num_timesteps; i++) 
     {
@@ -170,11 +98,6 @@ void taskProcessData(void *parameter)
   // Serial.println(xPortGetCoreID());
   while (1) 
   {
-    // if (!fb.getBool("Record")) {
-    //   vTaskDelay(1000 / portTICK_PERIOD_MS);
-    //   continue;
-    // }
-
     if(gotData)
     {
       //Add data to model
@@ -195,7 +118,7 @@ void taskProcessData(void *parameter)
       // Find the index of the maximum value in the output tensor
       int max_index = 0;
       float max_value = tflOutputTensor->data.f[0];
-      for (int i = 1; i < NUM_GESTURES; i++) 
+      for (int i = 1; i < NUM_STATES; i++) 
       {
         if (tflOutputTensor->data.f[i] > max_value) 
         {
@@ -204,7 +127,7 @@ void taskProcessData(void *parameter)
         }
       }
       // Update predict label
-      predicted_gesture = max_index;
+      predicted_breathing_state = max_index;
 
       // Predict gesture
       int16_t ax, ay, az;
@@ -243,29 +166,25 @@ void taskSendData(void *parameter)
 
   while (1) 
   {
-    // if (!fb.getBool("Record")) {
-    //   vTaskDelay(1000 / portTICK_PERIOD_MS);
-    //   continue;
-    // }
     unsigned long currentMillis = millis(); // get current time
-    if (predicted_gesture != -1 && (currentMillis - lastSendTime >= sendInterval)) 
+    if (predicted_breathing_state != -1 && (currentMillis - lastSendTime >= sendInterval)) 
     {
       lastSendTime = currentMillis;
 
-      String postData = GESTURES[predicted_gesture];
-      bool isBreathing = (predicted_gesture == 0);
+      String postData = BREATHING_STATES[predicted_breathing_state];
+      bool isBreathing = (predicted_breathing_state == 0);
       // Print out the data being sent
       Serial.println(postData);
 
       // Battery capacity
       sum = 0;
-      for(int i = 0; i < numberOfSamples; i++)
+      for(int i = 0; i < number_of_samples; i++)
       {
-        int analogVolts = analogReadMilliVolts(3) - offset;
+        int analogVolts = analogReadMilliVolts(3) - voltage_offset;
         sum += analogVolts;
         delayMicroseconds(1);
       }
-      voltage = sum / numberOfSamples;
+      voltage = sum / number_of_samples;
 
       // Get current time by format "YYYY-MM-DD HH:MM:SS"
       String currentTime = getFormattedTime();
@@ -306,7 +225,7 @@ void taskSendData(void *parameter)
         Serial.println("MQTT not connected");
       }
 
-      predicted_gesture = -1;
+      predicted_breathing_state = -1;
     }
     delay(1); // Delay for 1 second before next data sending
   }
